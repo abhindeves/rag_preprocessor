@@ -1,0 +1,10 @@
+[project]
+name = "md-extract"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.3.3",
+    "unstructured[md]>=0.18.14",
+]

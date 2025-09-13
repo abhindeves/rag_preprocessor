@@ -1,0 +1,1 @@
+User rag.py as the main folder and preprocessor.py to extract from rag and put it into json format
