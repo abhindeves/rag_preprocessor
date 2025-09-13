@@ -118,9 +118,9 @@ class EnhancedHTMLChunker:
             'image_output_dir_path': self.output_path,
             'extract_image_block_to_payload': True,
             'chunking_strategy': "by_title",
-            'max_characters': 5000,
-            'combine_text_under_n_chars': 1000,
-            'new_after_n_chars': 3000,
+            'max_characters': 2500,
+            'combine_text_under_n_chars': 500,
+            'new_after_n_chars': 1500,
         }
         
         # Update with user parameters

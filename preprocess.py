@@ -237,8 +237,8 @@ if __name__ == "__main__":
     # Example:
     from rag import EnhancedHTMLChunker
     chunker = EnhancedHTMLChunker()
-    chunks = chunker.chunk_html_with_enhanced_metadata("https://squidfunk.github.io/mkdocs-material/setup/setting-up-navigation/")
+    chunks = chunker.chunk_html_with_enhanced_metadata("https://squidfunk.github.io/mkdocs-material/contributing/making-a-pull-request/")
 
-    text_records, image_records = extract_records_from_chunks(chunks, base_url="https://squidfunk.github.io/mkdocs-material/setup/setting-up-navigation/")
+    text_records, image_records = extract_records_from_chunks(chunks, base_url="https://squidfunk.github.io/mkdocs-material/contributing/making-a-pull-request/")
     write_jsonl(text_records, "./output/text_records.jsonl")
     write_jsonl(image_records, "./output/image_records.jsonl")
