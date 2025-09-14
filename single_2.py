@@ -10,6 +10,7 @@ from PIL import Image
 import io
 import os
 import hashlib
+from datetime import datetime, timezone
 
 class EnhancedHTMLChunker:
     def __init__(self, output_path: str = "./output/"):
@@ -102,9 +103,145 @@ class EnhancedHTMLChunker:
         
         return result
 
+    def extract_table_info(self, element: Element) -> Optional[Dict[str, Any]]:
+        """
+        Extract table information from an element if it's a table.
+        """
+        if not hasattr(element, 'metadata') or not element.metadata:
+
+            return None
+            
+        element_type = type(element).__name__
+        metadata_dict = element.metadata.__dict__
+        
+        # # Check if this is a table element
+        is_table = (element_type == 'Table' or 
+                   metadata_dict.get('category') == 'Table' or
+                   'table' in str(element_type).lower())
+        
+
+        # if not is_table:
+        #     print("WRONG CHECK!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        #     return None
+        
+        
+
+        # Extract table data
+        table_info = {
+            'text_as_html': getattr(element.metadata, 'text_as_html', None),
+            'table_structure': None,
+            'row_count': 0,
+            'column_count': 0,
+            'headers': [],
+            'caption': None,
+            'table_type': 'unknown'
+        }
+        
+        # Try to parse table structure if available
+        if 'text_as_html' in metadata_dict:
+            print("GOT A TABLE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            html_content = getattr(element.metadata, 'text_as_html', None)
+            table_info['table_structure'] = self._parse_table_structure(html_content)
+            table_info['row_count'] = table_info['table_structure'].get('row_count', 0)
+            table_info['column_count'] = table_info['table_structure'].get('column_count', 0)
+            table_info['headers'] = table_info['table_structure'].get('headers', [])
+            table_info['caption'] = table_info['table_structure'].get('caption')
+            table_info['table_type'] = table_info['table_structure'].get('table_type', 'data_table')
+        
+        # Fallback: analyze plain text for basic structure
+        else:
+            return None
+        
+        return table_info
+
+    def _parse_table_structure(self, html_content: str) -> Dict[str, Any]:
+        """
+        Parse HTML table structure to extract meaningful information.
+        """
+        structure = {
+            'row_count': 0,
+            'column_count': 0,
+            'headers': [],
+            'caption': None,
+            'table_type': 'data_table',
+            'rows_data': []
+        }
+        
+        if not html_content:
+            return structure
+            
+        # Simple regex-based parsing (could be enhanced with BeautifulSoup)
+        # Count rows
+        row_matches = re.findall(r'<tr[^>]*>', html_content, re.IGNORECASE)
+        structure['row_count'] = len(row_matches)
+        
+        # Extract headers
+        header_pattern = r'<th[^>]*>(.*?)</th>'
+        headers = re.findall(header_pattern, html_content, re.IGNORECASE | re.DOTALL)
+        structure['headers'] = [re.sub(r'<[^>]+>', '', h).strip() for h in headers]
+        structure['column_count'] = len(structure['headers']) if structure['headers'] else 0
+        
+        # Extract caption
+        caption_match = re.search(r'<caption[^>]*>(.*?)</caption>', html_content, re.IGNORECASE | re.DOTALL)
+        if caption_match:
+            structure['caption'] = re.sub(r'<[^>]+>', '', caption_match.group(1)).strip()
+        
+        # If no headers found, try to count columns from first row
+        if structure['column_count'] == 0:
+            first_row = re.search(r'<tr[^>]*>(.*?)</tr>', html_content, re.IGNORECASE | re.DOTALL)
+            if first_row:
+                cell_pattern = r'<t[dh][^>]*>(.*?)</t[dh]>'
+                cells = re.findall(cell_pattern, first_row.group(1), re.IGNORECASE | re.DOTALL)
+                structure['column_count'] = len(cells)
+        
+        return structure
+
+    def _parse_text_table(self, text: str) -> Dict[str, Any]:
+        """
+        Parse plain text to detect table-like structure.
+        """
+        structure = {
+            'row_count': 0,
+            'column_count': 0,
+            'headers': [],
+            'caption': None,
+            'table_type': 'text_table'
+        }
+        
+        if not text:
+            return structure
+            
+        lines = text.strip().split('\n')
+        non_empty_lines = [line.strip() for line in lines if line.strip()]
+        
+        structure['row_count'] = len(non_empty_lines)
+        
+        # Try to detect column separators (|, \t, multiple spaces)
+        if non_empty_lines:
+            first_line = non_empty_lines[0]
+            # Count potential column separators
+            pipe_count = first_line.count('|')
+            tab_count = first_line.count('\t')
+            
+            if pipe_count > 0:
+                structure['column_count'] = pipe_count + 1
+                # First line might be headers
+                structure['headers'] = [col.strip() for col in first_line.split('|')]
+            elif tab_count > 0:
+                structure['column_count'] = tab_count + 1
+                structure['headers'] = [col.strip() for col in first_line.split('\t')]
+            else:
+                # Try to detect multiple spaces as separators
+                parts = re.split(r'\s{2,}', first_line)
+                if len(parts) > 1:
+                    structure['column_count'] = len(parts)
+                    structure['headers'] = [col.strip() for col in parts]
+        
+        return structure
+
     def chunk_html_with_enhanced_metadata(self, url: str, **kwargs) -> List[Element]:
         """
-        Main chunking method that returns chunks with integrated link/image analysis.
+        Main chunking method that returns chunks with integrated link/image/table analysis.
         Perfect for RAG pipelines. All relative URLs converted to absolute.
         """
         # Store base URL for relative link conversion
@@ -130,7 +267,7 @@ class EnhancedHTMLChunker:
         # Partition the HTML
         chunks = partition_html(url=url, **default_params)
         
-        # Enhance each chunk with link/image analysis
+        # Enhance each chunk with link/image/table analysis
         enhanced_chunks = []
         for chunk in chunks:
             enhanced_chunk = self.enhance_chunk_metadata(chunk)
@@ -140,7 +277,7 @@ class EnhancedHTMLChunker:
 
     def enhance_chunk_metadata(self, element: Element) -> Element:
         """
-        Add link and image analysis directly to the element's metadata.
+        Add link, image, and table analysis directly to the element's metadata.
         This modifies the element in place and returns it.
         """
         if not element.metadata:
@@ -150,6 +287,9 @@ class EnhancedHTMLChunker:
         
         # Perform link analysis
         categorized_links = self.separate_links_and_images(metadata_dict)
+        
+        # Perform table analysis
+        table_info = self.extract_table_info(element)
         
         if categorized_links:  # Only add if links were found
             # Calculate statistics
@@ -183,6 +323,15 @@ class EnhancedHTMLChunker:
                     element.metadata.important_links.append(url)
                     element.metadata.important_link_texts.append(text)
         
+        # Add table information if this is a table
+        if table_info:
+            element.metadata.table_info = table_info
+            element.metadata.is_table = True
+            element.metadata.has_table = True
+        else:
+            element.metadata.is_table = False
+            element.metadata.has_table = False
+        
         return element
 
     def get_chunk_data_for_rag(self, chunk: Element) -> Dict[str, Any]:
@@ -215,13 +364,21 @@ class EnhancedHTMLChunker:
                     'important_link_texts': chunk.metadata.important_link_texts,
                 }
             
+            # Add table data if available
+            if hasattr(chunk.metadata, 'table_info'):
+                enhanced_data.update({
+                    'table_info': chunk.metadata.table_info,
+                    'is_table': chunk.metadata.is_table,
+                    'has_table': chunk.metadata.has_table,
+                })
+            
             chunk_data['original_metadata'] = original_metadata
             chunk_data['enhanced_metadata'] = enhanced_data
         
         return chunk_data
 
 # ---------------------
-# Helper functions (moved from Code 2)
+# Helper functions (updated to handle tables)
 # ---------------------
 def _make_doc_slug(url: str) -> str:
     """
@@ -241,6 +398,9 @@ def _make_chunk_id(doc_slug: str, idx: int) -> str:
 def _make_image_id(chunk_id: str, img_idx: int) -> str:
     return f"{chunk_id}#img-{img_idx}"
 
+def _make_table_id(chunk_id: str, table_idx: int = 0) -> str:
+    return f"{chunk_id}#table-{table_idx}"
+
 def _to_absolute(url: Optional[str], base: Optional[str]) -> Optional[str]:
     if not url:
         return url
@@ -259,12 +419,12 @@ def _uniq_preserve_order(seq: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     return out
 
 # ---------------------
-# Convenience functions
+# Convenience functions (updated)
 # ---------------------
 def chunk_html_for_rag(url: str, output_path: str = "./output/", **kwargs) -> List[Element]:
     """
     Convenience function that returns ready-to-use chunks for RAG pipeline.
-    Each chunk contains integrated link and image analysis in its metadata.
+    Each chunk contains integrated link, image, and table analysis in its metadata.
     All relative URLs are converted to absolute URLs for direct processing.
     """
     chunker = EnhancedHTMLChunker(output_path=output_path)
@@ -389,10 +549,13 @@ def extract_chunk_summary_for_rag(chunk: Element) -> Dict[str, Any]:
         'element_type': type(chunk).__name__,
         'has_images': False,
         'has_links': False,
+        'has_table': False,
+        'is_table': False,
         'image_count': 0,
         'link_count': 0,
         'images': [],
-        'important_links': []
+        'important_links': [],
+        'table_info': None
     }
     
     if hasattr(chunk.metadata, 'enhanced_links'):
@@ -403,23 +566,31 @@ def extract_chunk_summary_for_rag(chunk: Element) -> Dict[str, Any]:
         summary['images'] = chunk.metadata.all_images if hasattr(chunk.metadata, 'all_images') else []
         summary['important_links'] = chunk.metadata.important_links if hasattr(chunk.metadata, 'important_links') else []
     
+    if hasattr(chunk.metadata, 'is_table'):
+        summary['is_table'] = chunk.metadata.is_table
+        summary['has_table'] = chunk.metadata.has_table
+        if hasattr(chunk.metadata, 'table_info'):
+            summary['table_info'] = chunk.metadata.table_info
+    
     return summary
 
 # ---------------------
-# Records extraction (from Code 2)
+# Updated records extraction (now includes tables)
 # ---------------------
 def extract_records_from_chunks(
     chunks: List[Any],
     base_url: Optional[str] = None,
     text_preview_chars: int = 256
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Extract two sets of records from a list of `unstructured` Element chunks:
-      - text_records: one per chunk (contains text + references to image_ids)
+    Extract three sets of records from a list of `unstructured` Element chunks:
+      - text_records: one per chunk (contains text + references to image_ids and table_ids)
       - image_records: one per image with a link back to chunk_id
+      - table_records: one per table with a link back to chunk_id
     """
+    scraped_at_time = datetime.now(timezone.utc).isoformat()
     if not chunks:
-        return [], []
+        return [], [], []
 
     # derive doc slug from base_url or first chunk metadata URL
     fallback_url = base_url or getattr(getattr(chunks[0], "metadata", None), "url", "") or ""
@@ -427,6 +598,7 @@ def extract_records_from_chunks(
 
     text_records: List[Dict[str, Any]] = []
     image_records: List[Dict[str, Any]] = []
+    table_records: List[Dict[str, Any]] = []
 
     # NEW: Track hierarchical structure for the entire document
     document_headings = []
@@ -568,9 +740,39 @@ def extract_records_from_chunks(
                 "image_format": None,
                 "image_embedding_id": None,
                 "summary_text": None,
-                "scraped_at": None
+                "scraped_at": scraped_at_time
             }
             image_records.append(image_rec)
+
+        # NEW: Handle table records
+        table_ids: List[str] = []
+        if meta_dict.get("is_table") or meta_dict.get("has_table"):
+            table_info = meta_dict.get("table_info", {})
+            table_id = _make_table_id(chunk_id, 0)
+            table_ids.append(table_id)
+            
+            # Extract table content
+            table_html = table_info.get("text_as_html") if table_info else None
+            table_structure = table_info.get("table_structure", {}) if table_info else {}
+            
+            table_rec = {
+                "table_id": table_id,
+                "chunk_id": chunk_id,
+                "doc_id": doc_slug,
+                "source_url": source_url,
+                "table_html": table_html,
+                "table_text": text,  # Plain text representation
+                "table_structure": table_structure,
+                "row_count": table_structure.get("row_count", 0),
+                "column_count": table_structure.get("column_count", 0),
+                "headers": table_structure.get("headers", []),
+                "caption": table_structure.get("caption"),
+                "table_type": table_structure.get("table_type", "unknown"),
+                "table_embedding_id": None,
+                "summary_text": None,
+                "scraped_at": scraped_at_time
+            }
+            table_records.append(table_rec)
 
         # token estimate simple heuristic
         token_est = int(max(1, len(text) / 4))
@@ -593,11 +795,6 @@ def extract_records_from_chunks(
                 if heading["level"] == hierarchy_level - 1:
                     parent_chunk_id = heading["chunk_id"]
                     break
-                
-        # # Get Document Structure from Document Headings
-        # document_structure = get_document_structure(document_headings)
-        # with open("./output/document_structure.json", "w") as f:
-        #     json.dump(document_structure, f, indent=2)
 
         text_record = {
             "chunk_id": chunk_id,
@@ -624,6 +821,9 @@ def extract_records_from_chunks(
             "token_estimate": token_est,
             "image_ids": image_ids,
             "image_count": len(image_ids),
+            "table_ids": table_ids,  # NEW: Table IDs
+            "table_count": len(table_ids),  # NEW: Table count
+            "is_table": meta_dict.get("is_table", False),  # NEW: Is this chunk a table?
             "important_links": important_links,
             "link_stats": meta_dict.get("link_stats", {}) or {},
             "structured_tags": sorted(tags),
@@ -634,13 +834,13 @@ def extract_records_from_chunks(
                 "filetype": meta_dict.get("filetype")
             },
             "language": (meta_dict.get("languages") or [None])[0],
-            "scraped_at": None,
+            "scraped_at": scraped_at_time,
             "text_embedding_id": None
         }
 
         text_records.append(text_record)
 
-    return text_records, image_records
+    return text_records, image_records, table_records
 
 def extract_keywords_from_text(text: str, max_keywords: int = 10) -> List[str]:
     """
@@ -715,8 +915,6 @@ def get_document_structure(document_headings: List[Dict]) -> Dict:
     
     return structure
 
-
-
 def write_jsonl(records: List[Dict[str, Any]], out_path: str) -> None:
     """
     Write a list of records (dicts) to a JSONL file.
@@ -726,16 +924,118 @@ def write_jsonl(records: List[Dict[str, Any]], out_path: str) -> None:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+# NEW: Table processing utilities
+def process_table_records(table_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Process table records to extract additional insights and statistics.
+    """
+    print(f"📊 Processing {len(table_records)} table records...")
+    
+    processed_tables = []
+    table_stats = {
+        'total_tables': len(table_records),
+        'tables_with_headers': 0,
+        'tables_with_captions': 0,
+        'average_rows': 0,
+        'average_columns': 0,
+        'table_types': {}
+    }
+    
+    total_rows = 0
+    total_columns = 0
+    
+    for table in table_records:
+        # Basic statistics
+        row_count = table.get('row_count', 0)
+        col_count = table.get('column_count', 0)
+        table_type = table.get('table_type', 'unknown')
+        
+        total_rows += row_count
+        total_columns += col_count
+        
+        if table.get('headers'):
+            table_stats['tables_with_headers'] += 1
+            
+        if table.get('caption'):
+            table_stats['tables_with_captions'] += 1
+            
+        # Count table types
+        if table_type not in table_stats['table_types']:
+            table_stats['table_types'][table_type] = 0
+        table_stats['table_types'][table_type] += 1
+        
+        # Enhanced table record with additional processing
+        enhanced_table = table.copy()
+        
+        # Generate table summary
+        summary_parts = []
+        if table.get('caption'):
+            summary_parts.append(f"Caption: {table['caption']}")
+        if table.get('headers'):
+            summary_parts.append(f"Headers: {', '.join(table['headers'][:5])}")  # First 5 headers
+        if row_count > 0:
+            summary_parts.append(f"{row_count} rows")
+        if col_count > 0:
+            summary_parts.append(f"{col_count} columns")
+            
+        enhanced_table['summary_text'] = '; '.join(summary_parts)
+        
+        # Extract searchable content from table
+        searchable_content = []
+        if table.get('caption'):
+            searchable_content.append(table['caption'])
+        if table.get('headers'):
+            searchable_content.extend(table['headers'])
+        # Add some of the table text content
+        if table.get('table_text'):
+            # Take first 200 chars of table text
+            searchable_content.append(table['table_text'][:200])
+            
+        enhanced_table['searchable_content'] = ' '.join(searchable_content)
+        
+        processed_tables.append(enhanced_table)
+    
+    # Calculate averages
+    if len(table_records) > 0:
+        table_stats['average_rows'] = round(total_rows / len(table_records), 2)
+        table_stats['average_columns'] = round(total_columns / len(table_records), 2)
+    
+    return {
+        'processed_tables': processed_tables,
+        'statistics': table_stats
+    }
+
+def extract_table_summary_for_rag(table_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract a concise summary of a table record for RAG pipeline.
+    """
+    return {
+        'table_id': table_record.get('table_id'),
+        'chunk_id': table_record.get('chunk_id'),
+        'row_count': table_record.get('row_count', 0),
+        'column_count': table_record.get('column_count', 0),
+        'has_headers': bool(table_record.get('headers')),
+        'has_caption': bool(table_record.get('caption')),
+        'table_type': table_record.get('table_type', 'unknown'),
+        'summary': table_record.get('summary_text', ''),
+        'headers': table_record.get('headers', [])[:5],  # First 5 headers only
+        'searchable_content': table_record.get('searchable_content', '')
+    }
+
 # Main execution example
 if __name__ == "__main__":
     # Your URL and parameters
-    url = 'https://squidfunk.github.io/mkdocs-material/contributing/requesting-a-change/'
+    url = 'https://squidfunk.github.io/mkdocs-material/insiders/access-management/'
     output_path = "./output/"
     
-    print("🚀 COMPLETE RAG HTML CHUNKING SYSTEM")
+    print("🚀 COMPLETE RAG HTML CHUNKING SYSTEM WITH UNSTRUCTURED TABLE DETECTION")
     print("="*80)
     
-    # Step 1: Chunk HTML with enhanced metadata
+    print("🔍 Using unstructured's built-in table detection via 'text_as_html' metadata field")
+    print("   This is more reliable than custom parsing logic!")
+    print()
+    
+    # Step 1: Chunk HTML with enhanced metadata (including tables)
     chunks = chunk_html_for_rag(
         url=url,
         output_path=output_path,
@@ -754,10 +1054,32 @@ if __name__ == "__main__":
     base_url = url
     chunks = fix_chunk_urls(chunks, base_url)
     
-
-    # Example of using the records extraction
-    text_records, image_records = extract_records_from_chunks(chunks, base_url=url)
-
+    # Step 3: Extract records (now includes tables)
+    text_records, image_records, table_records = extract_records_from_chunks(chunks, base_url=url)
     
+    print(f"📄 Extracted {len(text_records)} text records")
+    print(f"🖼️  Extracted {len(image_records)} image records")
+    print(f"📊 Extracted {len(table_records)} table records")
+    
+    # Step 4: Process table records for additional insights
+    if table_records:
+        table_processing_result = process_table_records(table_records)
+        processed_table_records = table_processing_result['processed_tables']
+        table_statistics = table_processing_result['statistics']
+        
+        print("\n📊 TABLE STATISTICS:")
+        print(f"   Total tables: {table_statistics['total_tables']}")
+        print(f"   Tables with headers: {table_statistics['tables_with_headers']}")
+        print(f"   Tables with captions: {table_statistics['tables_with_captions']}")
+        print(f"   Average rows per table: {table_statistics['average_rows']}")
+        print(f"   Average columns per table: {table_statistics['average_columns']}")
+        print(f"   Table types: {table_statistics['table_types']}")
+        
+        # Write processed table records
+        write_jsonl(processed_table_records, "./output/table_records.jsonl")
+    else:
+        print("📊 No tables found in the document")
+    
+    # Step 5: Write all records to files
     write_jsonl(text_records, "./output/text_records.jsonl")
     write_jsonl(image_records, "./output/image_records.jsonl")
